@@ -20,6 +20,7 @@ python3 -m vllm.entrypoints.openai.api_server \
     --max-lora-rank 16 \
     --lora-modules legal=./adapters/legal finance=./adapters/finance \
     --gpu-memory-utilization 0.90 \
+    --max-model-len 8192 \
     --port 8000 &
 
 until curl -sf localhost:8000/health >/dev/null; do sleep 2; done
