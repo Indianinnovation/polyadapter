@@ -1,0 +1,8 @@
+# the Dockerfile COPYs four named files, so this only trims the build context —
+# which matters once adapters/ exists locally and is a few hundred MB
+adapters/
+*.safetensors
+__pycache__/
+.venv/
+.git/
+*.md
