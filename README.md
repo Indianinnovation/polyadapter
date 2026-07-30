@@ -12,8 +12,24 @@ LoRA adapter inside a single vLLM instance, over the standard OpenAI API.
 
 ## Pod setup
 
-1. **Create the pod.** RunPod or Lambda Labs, **1x A100 80GB** (or L40S 48GB).
-   Image: `vllm/vllm-openai:latest`. Expose **HTTP port 8080**. ~60GB disk.
+1. **Create the pod.** RunPod pod config, field by field:
+
+   - [ ] **GPU:** 1x L40S 48GB to build and rehearse, 1x A100 80GB for the live demo.
+         Nothing under 24GB — the weights alone are 15.2GB in bf16. One card, never two;
+         a 7B model needs no tensor parallelism
+   - [ ] **Cloud type:** Community for build sessions. **Secure for the client demo** — it's
+         RunPod's own datacenters, which is the honest answer when their security lead asks
+         where the box physically is
+   - [ ] **Template / image:** `vllm/vllm-openai:latest`
+   - [ ] **Container disk:** 60GB. A full disk fails mid-download with a confusing error
+   - [ ] **Network volume:** 50GB mounted at `/root/.cache/huggingface`, so stopping the pod
+         doesn't mean re-downloading 15GB next session
+   - [ ] **Expose HTTP port 8080** — without this `demo.py` can't reach the gateway from your
+         laptop. Port 8000 stays internal; only the gateway should be reachable
+   - [ ] **CUDA version filter:** 12.1+, so you don't land on a host whose driver the vLLM
+         image won't start on
+   - [ ] **System RAM:** 32GB+. Matters during the safetensors load, not during serving
+
 2. **Copy the files** into the pod (`/workspace`), via `git clone`, `scp`, or the Jupyter uploader.
 3. **Run it:**
    ```bash
