@@ -2,13 +2,15 @@
 
 ~90s per adapter on an A100. Writes ./adapters/legal and ./adapters/finance.
 """
+import os
 import random
 
 import torch
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-BASE = "Qwen/Qwen2.5-7B-Instruct"
+# keep in sync with run.sh; adapters only load against the base they were trained on
+BASE = os.getenv("MODEL", "Qwen/Qwen2.5-3B-Instruct")
 STEPS = 60
 
 TENANTS = {

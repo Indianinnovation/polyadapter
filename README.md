@@ -14,9 +14,9 @@ LoRA adapter inside a single vLLM instance, over the standard OpenAI API.
 
 1. **Create the pod.** RunPod pod config, field by field:
 
-   - [ ] **GPU:** 1x L40S 48GB to build and rehearse, 1x A100 80GB for the live demo.
-         Nothing under 24GB — the weights alone are 15.2GB in bf16. One card, never two;
-         a 7B model needs no tensor parallelism
+   - [ ] **GPU:** 1x RTX 4090 24GB is enough for the default 3B model, bake included.
+         Step up to L40S 48GB or A100 80GB only if you set `MODEL` to a 7B. One card, never
+         two — nothing this size needs tensor parallelism
    - [ ] **Cloud type:** Community for build sessions. **Secure for the client demo** — it's
          RunPod's own datacenters, which is the honest answer when their security lead asks
          where the box physically is
@@ -66,8 +66,13 @@ pip install httpx
 python demo.py https://<pod-id>-8080.proxy.runpod.net
 ```
 
-Prints both tenants' answers to the same question, live TTFT and tok/s per request, then a 403
-for an unknown tenant. Same GPU, same base weights, different adapter per department.
+Fires both tenants **concurrently** at the same GPU, prints each answer with live TTFT and tok/s,
+then asserts the invariants worth claiming on stage: the two tenants diverge, an unknown tenant
+gets 403, and a tenant asking for someone else's adapter still gets its own. Nonzero exit if any
+of that is untrue — run it before the client does.
+
+TTFT measured from your laptop includes network round trip. For the sub-100ms number, run
+`demo.py` on the pod itself against `localhost:8080`.
 
 Or from any OpenAI client — the only change is the extra header:
 
@@ -90,6 +95,21 @@ Two places, nothing else:
 
 Adapters must be rank <= `--max-lora-rank` (16 here) and trained on the same base model.
 Raise `--max-loras` past 8 for more concurrent tenants; vLLM swaps the rest in from CPU on demand.
+
+## Changing the base model
+
+`MODEL` is read by both `run.sh` and `bake_loras.py`:
+
+```bash
+MODEL=Qwen/Qwen2.5-7B-Instruct bash run.sh
+```
+
+Defaults to **Qwen2.5-3B-Instruct** — the routing, isolation and adapter-swapping this POC
+demonstrates are identical at any size, and 3B runs the whole thing on a 24GB card. Size up when
+answer quality, not architecture, is what you're selling.
+
+Adapters only load against the base they were trained on. `run.sh` checks this and stops with a
+clear message; `rm -rf adapters` and re-run to re-bake against the new base.
 
 ## Cost
 
