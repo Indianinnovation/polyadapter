@@ -22,23 +22,32 @@ LoRA adapter inside a single vLLM instance, over the standard OpenAI API.
          where the box physically is
    - [ ] **Template / image:** `vllm/vllm-openai:latest`
    - [ ] **Container disk:** 60GB. A full disk fails mid-download with a confusing error
-   - [ ] **Network volume:** 50GB mounted at `/root/.cache/huggingface`, so stopping the pod
-         doesn't mean re-downloading 15GB next session
+   - [ ] **Network volume:** 20GB mounted at `/root/.cache/huggingface`, so stopping the pod
+         doesn't mean re-downloading the weights next session. 20GB fits the 3B default with
+         room to spare; it bills continuously, so don't oversize it
    - [ ] **Expose HTTP port 8080** — without this `demo.py` can't reach the gateway from your
          laptop. Port 8000 stays internal; only the gateway should be reachable
    - [ ] **CUDA version filter:** 12.1+, so you don't land on a host whose driver the vLLM
          image won't start on
    - [ ] **System RAM:** 32GB+. Matters during the safetensors load, not during serving
 
-2. **Copy the files** into the pod (`/workspace`), via `git clone`, `scp`, or the Jupyter uploader.
-3. **Run it:**
+2. **Verify the card** before spending time on anything else:
+
+   ```bash
+   nvidia-smi   # expect the card you paid for, 0 MiB used, driver 535+ / CUDA 12.x
+   ```
+
+   Wrong card or a driver error means terminate and re-provision — you are billed either way.
+
+3. **Copy the files** into the pod (`/workspace`), via `git clone`, `scp`, or the Jupyter uploader.
+4. **Run it:**
    ```bash
    cd /workspace && bash run.sh
    ```
-   First run takes ~10 min: model download (~15GB), then ~90s per adapter, then vLLM warmup.
+   First run takes ~10 min: model download (~6GB at 3B), then ~90s per adapter, then vLLM warmup.
    Adapters are cached in `./adapters`, so later runs skip straight to serving.
    You'll see `vllm up`, then uvicorn on `:8080`.
-4. **Note the public URL.** RunPod gives you `https://<pod-id>-8080.proxy.runpod.net`.
+5. **Note the public URL.** RunPod gives you `https://<pod-id>-8080.proxy.runpod.net`.
    Lambda: use the instance IP, `http://<ip>:8080`.
 
 ## Or as a container
