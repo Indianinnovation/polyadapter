@@ -77,8 +77,36 @@ Raise `--max-loras` past 8 for more concurrent tenants; vLLM swaps the rest in f
 
 ## Cost
 
-~$1.80/hr for the A100. A 2h build + 1h demo lands near **$5**. **Stop the pod when you're done** —
-RunPod bills a stopped pod's disk (a few cents/hr), a running idle one bills the full GPU rate.
+Budget ~$10 of GPU time, ceiling $20. The hourly rate is not the risk — one pod left running
+overnight is (~$43 on an A100). Rates move; confirm in the console before committing.
+
+| | GPU | Time | Cost |
+| --- | --- | --- | --- |
+| Build + debug | L40S 48GB | ~4h | ~$4 |
+| Full rehearsal | L40S 48GB | ~1h | ~$1 |
+| Live client demo | A100 80GB | ~1.5h | ~$3 |
+| Volume storage, 2 weeks | — | — | ~$2 |
+
+Build and rehearse on the L40S — half the burn rate, identical behaviour on a 7B model. Save the
+A100 for the session the client watches.
+
+**Before renting anything**
+
+- [ ] `python3 gateway.py test` passes locally — all the routing and tenant-isolation logic is
+      debuggable on a laptop, for free
+- [ ] Credit auto-reload **off**, so $20 is a hard ceiling
+- [ ] Network volume sized 50GB, not 500GB
+
+**Every session**
+
+- [ ] Adapters committed after the first bake, so later sessions skip straight to serving
+- [ ] **Stop the pod the moment you're done** — a running idle GPU bills the full rate
+- [ ] Check the balance before logging off
+
+**When the POC closes**
+
+- [ ] Terminate the pod
+- [ ] Delete the network volume — it bills while the pod is stopped (~$0.07/GB/month)
 
 ## Before this sees real client data
 
