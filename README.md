@@ -96,3 +96,7 @@ rate limits.
 | Gateway 503s / connection refused | vLLM still warming up; `curl localhost:8000/health` on the pod |
 | Both tenants answer identically | Adapters didn't load — check the `--lora-modules` paths exist |
 | Demo hangs from the laptop | Port 8080 not exposed in the pod config; add it and restart the pod |
+
+## License
+
+Apache 2.0, matching vLLM. See [LICENSE](LICENSE).
