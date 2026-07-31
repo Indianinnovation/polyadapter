@@ -9,6 +9,9 @@ from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
 VLLM_URL = os.getenv("VLLM_URL", "http://localhost:8000/v1/chat/completions")
+# vllm/vllm-openai template pods set this and reject unauthenticated requests, /health excepted
+VLLM_API_KEY = os.getenv("VLLM_API_KEY")
+VLLM_HEADERS = {"Authorization": f"Bearer {VLLM_API_KEY}"} if VLLM_API_KEY else {}
 
 # tenant id -> adapter name as registered by vllm's --lora-modules
 TENANT_ADAPTER_MAP = {
@@ -29,13 +32,14 @@ async def route_chat(body: dict, x_tenant_id: str = Header(...)):
     body["model"] = adapter
 
     if not body.get("stream"):
-        r = await client.post(VLLM_URL, json=body)
+        r = await client.post(VLLM_URL, json=body, headers=VLLM_HEADERS)
         return r.json()
 
-    req = client.build_request("POST", VLLM_URL, json=body)
+    req = client.build_request("POST", VLLM_URL, json=body, headers=VLLM_HEADERS)
     resp = await client.send(req, stream=True)
     return StreamingResponse(
         resp.aiter_raw(),
+        status_code=resp.status_code,
         media_type="text/event-stream",
         background=BackgroundTask(resp.aclose),
     )
