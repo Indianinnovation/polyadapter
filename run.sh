@@ -5,15 +5,19 @@ cd "$(dirname "$0")"
 
 export MODEL="${MODEL:-Qwen/Qwen2.5-3B-Instruct}"
 
-python3.12 -c "import peft, fastapi, httpx" 2>/dev/null || pip install -q peft fastapi uvicorn httpx
+python3 -c "import peft, fastapi, httpx" 2>/dev/null || pip install -q peft fastapi uvicorn httpx
+# some base images (e.g. Lambda Stack) ship system Pillow/jinja2 too old for current transformers
+pip install -q --upgrade "pillow>=10" "jinja2>=3.1"
 
-[ -d adapters ] || python3.12 bake_loras.py
+# the Dockerfile declares adapters/ a VOLUME, so docker pre-creates it empty;
+# check for the config file itself, not just the directory
+[ -f adapters/legal/adapter_config.json ] || python3 bake_loras.py
 
 # adapters only load against the base they were trained on; fail loud, not with a shape error
 grep -q "\"$MODEL\"" adapters/legal/adapter_config.json ||
     { echo "adapters were baked for a different base; rm -rf adapters and re-run" >&2; exit 1; }
 
-python3.12 -m vllm.entrypoints.openai.api_server \
+python3 -m vllm.entrypoints.openai.api_server \
     --model "$MODEL" \
     --enable-lora \
     --max-loras 8 \
@@ -26,4 +30,4 @@ python3.12 -m vllm.entrypoints.openai.api_server \
 until curl -sf localhost:8000/health >/dev/null; do sleep 2; done
 echo "vllm up"
 
-python3.12 gateway.py
+python3 gateway.py

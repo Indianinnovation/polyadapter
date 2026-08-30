@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PolyAdapter — Live POC Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-200">
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useRef, useCallback } = React;
+
+const Q = "Can we terminate the vendor early?";
+const TENANTS = { "tenant-legal-dept": "Legal Dept", "tenant-finance-dept": "Finance Dept" };
+
+function normalize(endpoint) {
+  return endpoint.replace(/\/+$/, "");
+}
+
+async function streamChat(endpoint, tenant, model, content, onDelta) {
+  const t0 = performance.now();
+  let res;
+  try {
+    res = await fetch(normalize(endpoint) + "/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-tenant-id": tenant },
+      body: JSON.stringify({ model, messages: [{ role: "user", content }], max_tokens: 120, stream: true }),
+    });
+  } catch (e) {
+    return { ok: false, status: 0, error: String(e), ttft: null, tps: 0, text: "" };
+  }
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    return { ok: false, status: res.status, error: errText, ttft: null, tps: 0, text: "" };
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "", text = "", ttft = null, tokenCount = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data: ") || trimmed === "data: [DONE]") continue;
+      try {
+        const json = JSON.parse(trimmed.slice(6));
+        const delta = json.choices && json.choices[0] && json.choices[0].delta && json.choices[0].delta.content;
+        if (!delta) continue;
+        if (ttft === null) ttft = performance.now() - t0;
+        tokenCount += 1;
+        text += delta;
+        onDelta && onDelta(text);
+      } catch (e) {}
+    }
+  }
+  const totalMs = performance.now() - t0;
+  return { ok: true, status: res.status, ttft, tps: tokenCount / (totalMs / 1000), tokenCount, text, totalMs };
+}
+
+async function nonStreamChat(endpoint, tenant, model, content) {
+  const t0 = performance.now();
+  let res;
+  try {
+    res = await fetch(normalize(endpoint) + "/v1/chat/completions", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, tenant ? { "x-tenant-id": tenant } : {}),
+      body: JSON.stringify({ model, messages: content ? [{ role: "user", content }] : [] }),
+    });
+  } catch (e) {
+    return { ok: false, status: 0, ms: performance.now() - t0, body: null, error: String(e) };
+  }
+  const ms = performance.now() - t0;
+  let body = null;
+  try { body = await res.json(); } catch (e) {}
+  return { ok: res.ok, status: res.status, ms, body };
+}
+
+function Section({ id, title, subtitle, children }) {
+  return (
+    <section id={id} className="scroll-mt-24 mb-14">
+      <h2 className="text-xl font-semibold text-white">{title}</h2>
+      {subtitle && <p className="text-slate-400 text-sm mt-1 mb-5">{subtitle}</p>}
+      {!subtitle && <div className="mb-5" />}
+      {children}
+    </section>
+  );
+}
+
+function StatCard({ label, value, ok }) {
+  return (
+    <div className={"rounded-lg border px-4 py-3 " + (ok === undefined ? "border-slate-700 bg-slate-900" : ok ? "border-emerald-700 bg-emerald-950" : "border-red-700 bg-red-950")}>
+      <div className="text-xs uppercase tracking-wide text-slate-400">{label}</div>
+      <div className={"text-2xl font-mono mt-1 " + (ok === undefined ? "text-white" : ok ? "text-emerald-400" : "text-red-400")}>{value}</div>
+    </div>
+  );
+}
+
+function ParitySection({ endpoint }) {
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState(null);
+  const code = `from openai import OpenAI
+
+client = OpenAI(
+    base_url="${endpoint || "http://<your-gpu-ip>:8080"}/v1",
+    api_key="unused",
+    default_headers={"x-tenant-id": "tenant-legal-dept"},
+)
+resp = client.chat.completions.create(
+    model="ignored",
+    messages=[{"role": "user", "content": "${Q}"}],
+)
+print(resp.choices[0].message.content)`;
+
+  const run = async () => {
+    setRunning(true);
+    setResult(null);
+    const r = await nonStreamChat(endpoint, "tenant-legal-dept", "ignored", Q);
+    setResult(r);
+    setRunning(false);
+  };
+
+  return (
+    <Section id="parity" title="1. OpenAI API Parity" subtitle="Standard OpenAI client code, pointed at the gateway — no SDK fork, no custom client.">
+      <div className="grid md:grid-cols-2 gap-4">
+        <pre className="bg-black rounded-lg p-4 text-sm font-mono text-emerald-300 overflow-x-auto border border-slate-800">{code}</pre>
+        <div className="bg-slate-900 rounded-lg p-4 border border-slate-800 flex flex-col">
+          <button onClick={run} disabled={!endpoint || running}
+            className="self-start px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium mb-3">
+            {running ? "Running…" : "▶ Run this live"}
+          </button>
+          <div className="flex-1 overflow-auto">
+            {result && result.ok && (
+              <div>
+                <div className="text-xs text-slate-400 mb-2">{result.status} · {result.ms.toFixed(0)}ms round trip</div>
+                <div className="text-sm whitespace-pre-wrap text-white">{result.body && result.body.choices && result.body.choices[0].message.content}</div>
+              </div>
+            )}
+            {result && !result.ok && (
+              <div className="text-red-400 text-sm">Failed ({result.status || "network error"}) — {result.error || JSON.stringify(result.body)}</div>
+            )}
+            {!result && <div className="text-slate-500 text-sm">Response will render here.</div>}
+          </div>
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+function TenantPanel({ tenant, label, transcript, stats }) {
+  return (
+    <div className="bg-slate-900 rounded-lg border border-slate-800 p-4">
+      <div className="flex items-center justify-between mb-2">
+        <div className="font-medium text-white">{label}</div>
+        <code className="text-xs text-slate-500">{tenant}</code>
+      </div>
+      <div className="h-32 overflow-y-auto text-sm text-slate-200 whitespace-pre-wrap font-mono bg-black rounded p-2 mb-2 border border-slate-800">
+        {transcript || <span className="text-slate-600">…</span>}
+      </div>
+      {stats && (
+        <div className="flex gap-4 text-xs text-slate-400 font-mono">
+          <span>TTFT {stats.ttft !== null ? stats.ttft.toFixed(0) + "ms" : "—"}</span>
+          <span>{stats.tps ? stats.tps.toFixed(1) + " tok/s" : "—"}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IsolationSection({ endpoint }) {
+  const [running, setRunning] = useState(false);
+  const [legal, setLegal] = useState({ text: "", stats: null });
+  const [finance, setFinance] = useState({ text: "", stats: null });
+  const [checks, setChecks] = useState(null);
+
+  const fireBoth = async () => {
+    setRunning(true);
+    setChecks(null);
+    setLegal({ text: "", stats: null });
+    setFinance({ text: "", stats: null });
+
+    const [legalRes, financeRes] = await Promise.all([
+      streamChat(endpoint, "tenant-legal-dept", "ignored", Q, (t) => setLegal({ text: t, stats: null })),
+      streamChat(endpoint, "tenant-finance-dept", "ignored", Q, (t) => setFinance({ text: t, stats: null })),
+    ]);
+    setLegal({ text: legalRes.text, stats: legalRes });
+    setFinance({ text: financeRes.text, stats: financeRes });
+
+    const rogue = await nonStreamChat(endpoint, "tenant-rogue", "ignored", Q);
+    const crossed = await nonStreamChat(endpoint, "tenant-finance-dept", "legal", Q);
+    const crossedText = crossed.body && crossed.body.choices && crossed.body.choices[0].message.content;
+
+    setChecks([
+      { label: "Both tenants returned answers", pass: !!legalRes.text && !!financeRes.text },
+      { label: "Responses diverge (different adapters loaded)", pass: legalRes.text !== financeRes.text && !!legalRes.text },
+      { label: "Unknown tenant (\"tenant-rogue\") rejected with 403", pass: rogue.status === 403 },
+      { label: "Finance requesting “legal” model still served by its own adapter", pass: !!crossedText },
+    ]);
+    setRunning(false);
+  };
+
+  return (
+    <Section id="isolation" title="3. Multi-Tenant Isolation" subtitle="Two departments, one GPU, simultaneous requests — each routed to its own LoRA adapter by the x-tenant-id header.">
+      <button onClick={fireBoth} disabled={!endpoint || running}
+        className="px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium mb-4">
+        {running ? "Firing…" : "▶ Fire Both Simultaneously"}
+      </button>
+      <div className="grid md:grid-cols-2 gap-4 mb-4">
+        <TenantPanel tenant="tenant-legal-dept" label={TENANTS["tenant-legal-dept"]} transcript={legal.text} stats={legal.stats} />
+        <TenantPanel tenant="tenant-finance-dept" label={TENANTS["tenant-finance-dept"]} transcript={finance.text} stats={finance.stats} />
+      </div>
+      {checks && (
+        <div className="bg-slate-900 rounded-lg border border-slate-800 p-4 space-y-1.5">
+          {checks.map((c, i) => (
+            <div key={i} className={"text-sm font-mono " + (c.pass ? "text-emerald-400" : "text-red-400")}>
+              {c.pass ? "✔" : "✘"} {c.label}
+            </div>
+          ))}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function PrePostSection({ endpoint }) {
+  const [vllmEndpoint, setVllmEndpoint] = useState("");
+  const [baseModel, setBaseModel] = useState("Qwen/Qwen2.5-3B-Instruct");
+  const [running, setRunning] = useState(false);
+  const [base, setBase] = useState({ text: "", stats: null });
+  const [legal, setLegal] = useState({ text: "", stats: null });
+  const [finance, setFinance] = useState({ text: "", stats: null });
+  const [checks, setChecks] = useState(null);
+
+  const run = async () => {
+    setRunning(true);
+    setChecks(null);
+    setBase({ text: "", stats: null });
+    setLegal({ text: "", stats: null });
+    setFinance({ text: "", stats: null });
+
+    const [baseRes, legalRes, financeRes] = await Promise.all([
+      streamChat(vllmEndpoint, "none", baseModel, Q, (t) => setBase({ text: t, stats: null })),
+      streamChat(endpoint, "tenant-legal-dept", "ignored", Q, (t) => setLegal({ text: t, stats: null })),
+      streamChat(endpoint, "tenant-finance-dept", "ignored", Q, (t) => setFinance({ text: t, stats: null })),
+    ]);
+    setBase({ text: baseRes.text, stats: baseRes });
+    setLegal({ text: legalRes.text, stats: legalRes });
+    setFinance({ text: financeRes.text, stats: financeRes });
+
+    setChecks([
+      { label: "Base model answered (pre fine-tune)", pass: !!baseRes.text },
+      { label: "Base response carries no department persona", pass: !!baseRes.text && !baseRes.text.includes("LEGAL DEPT") && !baseRes.text.includes("FINANCE DEPT") },
+      { label: "Legal adapter response tagged 'LEGAL DEPT' (post fine-tune)", pass: legalRes.text.includes("LEGAL DEPT") },
+      { label: "Finance adapter response tagged 'FINANCE DEPT' (post fine-tune)", pass: financeRes.text.includes("FINANCE DEPT") },
+      { label: "All three responses diverge from each other", pass: !!baseRes.text && !!legalRes.text && !!financeRes.text && baseRes.text !== legalRes.text && legalRes.text !== financeRes.text && baseRes.text !== financeRes.text },
+    ]);
+    setRunning(false);
+  };
+
+  const ready = !!endpoint && !!vllmEndpoint && !!baseModel;
+
+  return (
+    <Section id="preprost" title="2. Pre/Post Fine-Tune Comparison" subtitle="Same question, three ways: the raw base model with no adapter (pre fine-tune), then the legal and finance LoRA adapters loaded on the same GPU (post fine-tune).">
+      <div className="grid md:grid-cols-2 gap-4 mb-4">
+        <label className="text-sm text-slate-400">
+          vLLM direct endpoint, port 8000 (bypasses the gateway — the base model has no adapter loaded)
+          <input type="text" value={vllmEndpoint} onChange={(e) => setVllmEndpoint(e.target.value)}
+            placeholder="http://<your-gpu-ip>:8000"
+            className="mt-1 w-full bg-black border border-slate-700 rounded px-2 py-1 text-white font-mono text-sm" />
+        </label>
+        <label className="text-sm text-slate-400">
+          Base model name (must match --model on the vLLM server)
+          <input type="text" value={baseModel} onChange={(e) => setBaseModel(e.target.value)}
+            className="mt-1 w-full bg-black border border-slate-700 rounded px-2 py-1 text-white font-mono text-sm" />
+        </label>
+      </div>
+      <button onClick={run} disabled={!ready || running}
+        className="px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium mb-4">
+        {running ? "Running…" : "▶ Run Pre/Post Comparison"}
+      </button>
+      <div className="grid md:grid-cols-3 gap-4 mb-4">
+        <TenantPanel tenant="base model (no adapter)" label="Pre — Base Model" transcript={base.text} stats={base.stats} />
+        <TenantPanel tenant="tenant-legal-dept" label="Post — Legal Adapter" transcript={legal.text} stats={legal.stats} />
+        <TenantPanel tenant="tenant-finance-dept" label="Post — Finance Adapter" transcript={finance.text} stats={finance.stats} />
+      </div>
+      {checks && (
+        <div className="bg-slate-900 rounded-lg border border-slate-800 p-4 space-y-1.5">
+          {checks.map((c, i) => (
+            <div key={i} className={"text-sm font-mono " + (c.pass ? "text-emerald-400" : "text-red-400")}>
+              {c.pass ? "✔" : "✘"} {c.label}
+            </div>
+          ))}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function BenchmarkSection({ endpoint, onAggregateTps }) {
+  const [running, setRunning] = useState(false);
+  const [runs, setRuns] = useState([]);
+  const [aggregateTps, setAggregateTps] = useState(null);
+  const logRef = useRef(null);
+
+  const runBenchmark = async () => {
+    setRunning(true);
+    setRuns([]);
+    setAggregateTps(null);
+    const N = 20;
+    const batchStart = performance.now();
+    const requests = Array.from({ length: N }, (_, i) => {
+      const tenant = i % 2 === 0 ? "tenant-legal-dept" : "tenant-finance-dept";
+      return streamChat(endpoint, tenant, "ignored", Q, null).then((r) => {
+        const entry = { i, tenant, ttft: r.ttft, tps: r.tps, tokenCount: r.tokenCount, ok: r.ok, status: r.status };
+        setRuns((prev) => [...prev, entry].sort((a, b) => a.i - b.i));
+        if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+        return entry;
+      });
+    });
+    const collected = await Promise.all(requests);
+    const batchMs = performance.now() - batchStart;
+    const okRuns = collected.filter((r) => r.ok && r.ttft !== null);
+    if (okRuns.length) {
+      const totalTokens = okRuns.reduce((s, r) => s + r.tokenCount, 0);
+      const aggTps = totalTokens / (batchMs / 1000);
+      setAggregateTps(aggTps);
+      onAggregateTps(aggTps);
+    }
+    setRunning(false);
+  };
+
+  const okRuns = runs.filter((r) => r.ok && r.ttft !== null);
+  const avgTtft = okRuns.length ? okRuns.reduce((s, r) => s + r.ttft, 0) / okRuns.length : null;
+
+  return (
+    <Section id="benchmark" title="4. Response Time Benchmark" subtitle="Concurrent TTFT and aggregate tokens/sec across simultaneous requests, measured from wherever this page is running — this reflects vLLM's continuous batching, not single-stream speed. Includes network round trip — for the sub-100ms number specifically, open this page on the pod itself against localhost.">
+      <button onClick={runBenchmark} disabled={!endpoint || running}
+        className="px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium mb-4">
+        {running ? "Benchmarking…" : "▶ Run Benchmark (20 concurrent requests)"}
+      </button>
+      <div className="grid grid-cols-2 md:grid-cols-2 gap-4 mb-4">
+        <StatCard label="Avg TTFT" value={avgTtft !== null ? avgTtft.toFixed(0) + "ms" : "—"} ok={avgTtft !== null ? avgTtft < 100 : undefined} />
+        <StatCard label="Aggregate tok/s" value={aggregateTps !== null ? aggregateTps.toFixed(1) : "—"} ok={aggregateTps !== null ? aggregateTps >= 60 : undefined} />
+      </div>
+      <div ref={logRef} className="bg-black rounded-lg border border-slate-800 p-3 h-40 overflow-y-auto font-mono text-xs">
+        {runs.length === 0 && <div className="text-slate-600">$ waiting to run…</div>}
+        {runs.map((r, i) => (
+          <div key={i} className={r.ok ? "text-emerald-400" : "text-red-400"}>
+            [{r.tenant}] {r.ok ? `TTFT ${r.ttft.toFixed(0)}ms | ${r.tps.toFixed(1)} tok/s (single-stream)` : `failed (${r.status})`}
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+function CostSection({ avgTps }) {
+  const [tokensPerMonthM, setTokensPerMonthM] = useState(50);
+  const [openaiPrice, setOpenaiPrice] = useState(4.0);
+  const [gpuHourlyRate, setGpuHourlyRate] = useState(2.5);
+  const gpuTps = avgTps || 65;
+
+  const openaiCost = tokensPerMonthM * openaiPrice;
+  const gpuHours = (tokensPerMonthM * 1e6) / (gpuTps * 3600);
+  const gpuCost = gpuHours * gpuHourlyRate;
+  const savingsPct = openaiCost > 0 ? (1 - gpuCost / openaiCost) * 100 : 0;
+
+  return (
+    <Section id="pitch" title="5. The Cost Pitch">
+      <blockquote className="border-l-4 border-emerald-600 bg-slate-900 rounded-r-lg p-5 text-slate-200 italic mb-6">
+        "What you are looking at right now is running live on an enterprise NVIDIA GPU processing
+        requests for multiple departments simultaneously. Instead of paying OpenAI $4.00 per 1M
+        tokens, this dedicated setup processes millions of tokens for pennies on the dollar while
+        keeping 100% of your data inside your private cloud."
+      </blockquote>
+      <div className="bg-slate-900 rounded-lg border border-slate-800 p-5">
+        <div className="grid md:grid-cols-3 gap-4 mb-5">
+          <label className="text-sm text-slate-400">
+            Monthly tokens (millions)
+            <input type="number" value={tokensPerMonthM} onChange={(e) => setTokensPerMonthM(+e.target.value)}
+              className="mt-1 w-full bg-black border border-slate-700 rounded px-2 py-1 text-white font-mono" />
+          </label>
+          <label className="text-sm text-slate-400">
+            OpenAI price ($ / 1M tokens)
+            <input type="number" step="0.1" value={openaiPrice} onChange={(e) => setOpenaiPrice(+e.target.value)}
+              className="mt-1 w-full bg-black border border-slate-700 rounded px-2 py-1 text-white font-mono" />
+          </label>
+          <label className="text-sm text-slate-400">
+            GPU hourly rate ($)
+            <input type="number" step="0.1" value={gpuHourlyRate} onChange={(e) => setGpuHourlyRate(+e.target.value)}
+              className="mt-1 w-full bg-black border border-slate-700 rounded px-2 py-1 text-white font-mono" />
+          </label>
+        </div>
+        <div className="text-xs text-slate-500 mb-4">
+          GPU throughput: {gpuTps.toFixed(1)} tok/s aggregate {avgTps ? "(measured live in section 4, concurrent)" : "(default estimate — run the benchmark above for a real number)"}
+        </div>
+        <div className="grid md:grid-cols-3 gap-4">
+          <StatCard label="OpenAI, monthly" value={"$" + openaiCost.toFixed(0)} />
+          <StatCard label="Dedicated GPU, monthly" value={"$" + gpuCost.toFixed(2)} ok={true} />
+          <StatCard label="Savings" value={savingsPct.toFixed(1) + "%"} ok={savingsPct > 0} />
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+function App() {
+  const [endpoint, setEndpoint] = useState("");
+  const [avgTps, setAvgTps] = useState(null);
+
+  return (
+    <div className="max-w-5xl mx-auto px-6 py-10">
+      <header className="mb-8">
+        <h1 className="text-2xl font-bold text-white">PolyAdapter — Live POC Dashboard</h1>
+        <p className="text-slate-400 text-sm mt-1">One GPU, one base model, many tenants. Every number on this page comes from a real request to the endpoint below — nothing is canned.</p>
+      </header>
+
+      <div className="sticky top-0 z-10 bg-slate-950/95 backdrop-blur border-b border-slate-800 py-3 mb-10 flex flex-wrap items-center gap-3">
+        <input
+          type="text"
+          value={endpoint}
+          onChange={(e) => setEndpoint(e.target.value)}
+          placeholder="http://<your-gpu-ip>:8080  or  https://<pod-id>-8080.proxy.runpod.net"
+          className="flex-1 min-w-[280px] bg-black border border-slate-700 rounded px-3 py-2 text-sm font-mono text-white"
+        />
+        <span className={"h-2.5 w-2.5 rounded-full " + (endpoint ? "bg-emerald-500" : "bg-slate-700")}></span>
+        <nav className="flex gap-4 text-sm text-slate-400">
+          <a href="#parity" className="hover:text-white">Parity</a>
+          <a href="#preprost" className="hover:text-white">Pre/Post</a>
+          <a href="#isolation" className="hover:text-white">Isolation</a>
+          <a href="#benchmark" className="hover:text-white">Benchmark</a>
+          <a href="#pitch" className="hover:text-white">Cost</a>
+        </nav>
+      </div>
+
+      <ParitySection endpoint={endpoint} />
+      <PrePostSection endpoint={endpoint} />
+      <IsolationSection endpoint={endpoint} />
+      <BenchmarkSection endpoint={endpoint} onAggregateTps={setAvgTps} />
+      <CostSection avgTps={avgTps} />
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

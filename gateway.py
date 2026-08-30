@@ -5,6 +5,7 @@ import sys
 import httpx
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
@@ -20,6 +21,13 @@ TENANT_ADAPTER_MAP = {
 }
 
 app = FastAPI(title="PolyAdapter Multi-Tenant Gateway")
+# dashboard.html is a static file opened cross-origin against this API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["POST"],
+    allow_headers=["*"],
+)
 client = httpx.AsyncClient(timeout=300.0)
 
 

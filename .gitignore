@@ -2,3 +2,9 @@ adapters/
 __pycache__/
 .venv/
 .DS_Store
+
+vllm.txt
+vllm.pem
+.lambda_instance_id
+lambda_watchdog.log
+rundropapi.md
